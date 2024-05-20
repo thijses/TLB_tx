@@ -1,0 +1,31 @@
+#######################################
+# Syntax Coloring Map For thijsUIpulses
+#######################################
+# Class
+#######################################
+
+UIpulseHandler		KEYWORD1
+
+#######################################
+# Methods and Functions
+#######################################	
+
+_setPinActive		KEYWORD2
+_setPinInactive		KEYWORD2
+init				KEYWORD2
+abortPulsing		KEYWORD2
+startPulseList		KEYWORD2
+startPulsing		KEYWORD2
+setPWMfreq			KEYWORD2
+setPWMduty			KEYWORD2
+finishPulses		KEYWORD2
+
+#######################################
+# Constants
+#######################################
+
+UIpulse				LITERAL1
+
+UIpulsesLeft		LITERAL1
+currentPulse		LITERAL1
+
