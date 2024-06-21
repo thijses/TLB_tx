@@ -53,7 +53,11 @@ LED_BLUE:   27
 #include "extraClasses.h"
 #include "EspNowRcLink/Transmitter.h"
 
-#define ANALOG_TRIGGER // use analog trigger (instead of magenetic encoder (AS5600/MT6701))
+// #define SN_PURPLE // the first 'deleteme' model, with the purple 3D print in the middle (and the older & thicker (fusion V9) body)
+#define SN_BROWN // the second 'deleteme' model, with the brown 3D print in the middle (and the slightly thinner (fusion V10) body)
+//// future versions should use the fusion V11+ model (which is ~1.2mm thinner than V9 (and ~0.5mm thinner than V10), for the sake of better AS5600 magnet alignment)
+
+// #define ANALOG_TRIGGER // use analog trigger (instead of magenetic encoder (AS5600/MT6701))
 //#define MT6701 // use MT6701 instead of AS5600 for the magnetic encoder. They're (mostly) pin-compatible, but please compile correctly to avoid damage (competing output signals)
 
 //#define POWER_BUTTON // TODO: test on next PCB V1 (or cut trace and put diode on V0)
@@ -63,10 +67,10 @@ LED_BLUE:   27
 #define USE_BUZZER // use piezo buzzer
 #define USE_VIBRATION // use vibration motor
 
-// #define TRIGGER_CALIB // calibrate the trigger values (human debug, not automated (yet))
+//#define TRIGGER_CALIB // calibrate the trigger values (human debug, not automated (yet))
+////#define FILTER_BAD_TRIGGER_READINGS // attempt to filter out very erroneous trigger input values (NOTE: defined along with the SN_ constants below)
 
-#define ANALOG_TRIGGER_REVERSE
-
+#define CHARGE_SLEEP_PATCH // PCB R01 charging will start MCU, but it will brown-out (because CP2102 3.3V is weak) if power-switch is off
 
 ///////////////////////////////////////////pinout//////////////////////////////////////////////
 // nrf::NRF_PINOUT nrfPinout(4,5,16,17,18,HSPI); // parameter order: CE, CSN, SCK, MISO, MOSI, SPI_PORT
@@ -131,12 +135,32 @@ const uint32_t vbatADC_enSampleInterval = 25; // (micros) time between ADC sampl
 const int16_t vbatADCoffset = 1647; // add this to ADC values
 const float vbatADCdivider = 1293.6; // divide ADC value (post-offset) by this to get battery voltage. = ADC_per_volt / volt_div_ratio
 
-const int16_t trigLimits[2] = {0, 4095}; // TODO: calibrate!!! (note: will likely include rollover)
 //// the trigger value will be converted to a float between 0.0 and 1.0 . These thteshold values should work for an analog trigger or a magnetic-encoder one, as they're just proportions
 //// finally, the (post-threshold) throttle (note: so not trigger) value, will be converted (to whatever communication format size i'm using) and sent to the board
-const float trigBrakeThreshold = 0.25; // below this value, the brakes will be applied
-const float trigIdleThreshold = 0.5; // between this and the brake threshold, the value will be neutral (this should be just above the trigger's springloaded-idle position)
-const float trigHighThreshold = 0.9; // from this value onwards, the output will be high
+#ifdef SN_PURPLE
+  #define FILTER_BAD_TRIGGER_READINGS // attempt to filter out very erroneous trigger input values
+  const int16_t trigLimits[2] = {3100, 3800}; // TODO: calibrate!!! (note: will likely include rollover)
+  const float trigBrakeThreshold = 0.35; // below this value, the brakes will be applied
+  const float trigIdleThreshold = 0.65; // between this and the brake threshold, the value will be neutral (this should be just above the trigger's springloaded-idle position)
+  const float trigHighThreshold = 0.95; // from this value onwards, the output will be saturated
+#elif defined(SN_BROWN)
+  #define FILTER_BAD_TRIGGER_READINGS // attempt to filter out very erroneous trigger input values
+  #define SIMPLE_TRIGGER_REVERSE // reverse trigger direction
+  const int16_t trigLimits[2] = {200, 900};
+  const float trigBrakeThreshold = 0.35; // below this value, the brakes will be applied
+  const float trigIdleThreshold = 0.65; // between this and the brake threshold, the value will be neutral (this should be just above the trigger's springloaded-idle position)
+  const float trigHighThreshold = 0.95; // from this value onwards, the output will be saturated
+#else
+  const int16_t trigLimits[2] = {0, 4096}; // TODO: calibrate!!! (note: will likely include rollover)
+  const float trigBrakeThreshold = 0.25; // below this value, the brakes will be applied
+  const float trigIdleThreshold = 0.5; // between this and the brake threshold, the value will be neutral (this should be just above the trigger's springloaded-idle position)
+  const float trigHighThreshold = 0.9; // from this value onwards, the output will be saturated
+  #error("no calibration data available! select a specific unit")
+#endif
+
+#ifdef FILTER_BAD_TRIGGER_READINGS
+  const float badTriggerReadingThreshold = 0.5; // if trigger input is this much out of range (0~1.0), something is wrong
+#endif
 
 const uint32_t transmitInterval = 20; // (millis) interval between sending data to the board
 
@@ -177,6 +201,14 @@ float getVbat() { // getting battery voltage
 ///////////////////////////////////////////setup//////////////////////////////////////////////
 void setup() {
   Serial.begin(115200);
+  #ifdef CHARGE_SLEEP_PATCH
+    esp_reset_reason_t resetReason = esp_reset_reason();
+    if(resetReason == ESP_RST_BROWNOUT) { // when charging with power-switch off, brown-out will occur
+      Serial.println("going to deep-sleep (until POR) to avoid brown-out looping");
+      // esp_sleep_disable_wakeup_source(
+      esp_deep_sleep_start();
+    }
+  #endif
   #ifdef POWER_BUTTON
     bool VREG_ENread = digitalRead(VREG_ENpin); // check the state(?)
     Serial.print("VREG_EN: "); Serial.println(VREG_ENread);
@@ -245,10 +277,11 @@ void setup() {
       //sensor.setSF(3); //set slow-filter to the mode with the least delay
       //sensor.setFTH(7); //set fast filter threshold to something... idk yet
       //// extra sensor debug:
-//      trigSensor.printConfig(); //shows you the contents of the configuration registers
-//      Serial.println();
+      trigSensor.printConfig(); //shows you the contents of the configuration registers
+      Serial.println();
       trigSensor.printStatus(); //shows you the status of the sensor (not whether it's connected, but whether the magnet is correctly positioned and stuff)
       Serial.println();
+      
     #endif
   #endif
 
@@ -297,6 +330,9 @@ void setup() {
   #ifdef USE_BUZZER
     buzzerHandler.startPulseList(buzzer_readyPulse, sizeof(buzzer_readyPulse) / sizeof(UIpulse));
   #endif
+  #ifdef USE_VIBRATION
+    vibrMotorHandler.startPulsing(3, 250, 0.5, 500.0, 1.0);
+  #endif
 }
 
 
@@ -325,9 +361,6 @@ void loop() {
     //// read trigger and calculate throttle
     #ifdef ANALOG_TRIGGER
       triggerVal = analogRead(trigPotPin);
-      #ifdef ANALOG_TRIGGER_REVERSE
-        triggerVal = 4095-triggerVal;
-      #endif
     #else //// AS5600/MT6701
       #ifdef MT6701
         #error("MT6701 is TBD")
@@ -335,7 +368,19 @@ void loop() {
         triggerVal = trigSensor.getAngle();
       #endif
     #endif
-    float trigFloat = abs((triggerVal - trigLimits[0]) / ((float)(trigLimits[1]-trigLimits[0])));
+    #ifdef SIMPLE_TRIGGER_REVERSE
+      triggerVal = 4095-triggerVal;
+    #endif
+    float trigFloat = (triggerVal - trigLimits[0]) / ((float)(trigLimits[1]-trigLimits[0]));
+    #ifdef FILTER_BAD_TRIGGER_READINGS
+      if((trigFloat < -(badTriggerReadingThreshold)) || (trigFloat > (1.0+badTriggerReadingThreshold))) { // if input reading is VERY much out of range
+        //// there are several options for what to do in this scenario.
+        //// my current solution is to avoid sending any data to the board. radio silence can be detected from the receiver's side, while repeating the last good measurement cannot
+        Serial.println("bad trigger reading ignored!");
+        delay(1); // might help? (in case of I2C signaling issues)
+        //return; // restart loop
+      } else { // just skip radio transmission (keep LEDhandler and stuff)
+    #endif
     trigFloat = constrain(trigFloat, 0.0, 1.0);
     if(trigFloat < trigBrakeThreshold) { // if braking
       dataToSend = ((trigFloat-trigBrakeThreshold)/trigBrakeThreshold) * 128; // map from -128 to -1 ( non-binary braking is not yet implemented, but it would be cool, wouldn't it?)
@@ -351,6 +396,10 @@ void loop() {
     int16_t RCdata = (int16_t)1500+dataToSend;
     radio.setChannel(0, RCdata);
     radio.commit();
+
+    #ifdef FILTER_BAD_TRIGGER_READINGS
+      } // close the 'else' statement above. (not my preferred coding style, but it works for now)
+    #endif
     
     ///////////////////////////////////////////serial debugging start//////////////////////////////////////////////
     #ifdef TRIGGER_CALIB
@@ -359,13 +408,13 @@ void loop() {
       Serial.print(trigFloat); Serial.print('\t');
       Serial.println(dataToSend);
     #endif
-//    Serial.print(speedSetting); Serial.print('\t');
-//    Serial.print(triggerVal); Serial.print('\t');
-//    Serial.print(trigFloat); Serial.print('\t');
-//    Serial.print(dataToSend.throttle()); Serial.print('\t');
-//    float vbatVal = getVbat();
-//    Serial.print(vbatVal, 3);
-//    Serial.println();
+    // Serial.print(speedSetting); Serial.print('\t');
+    // Serial.print(triggerVal); Serial.print('\t');
+    // Serial.print(trigFloat); Serial.print('\t');
+    // Serial.print(dataToSend.throttle()); Serial.print('\t');
+    // float vbatVal = getVbat();
+    // Serial.print(vbatVal, 3);
+    // Serial.println();
     ///////////////////////////////////////////serial debugging end//////////////////////////////////////////////
     
   } // closes if(transmitTimer)
